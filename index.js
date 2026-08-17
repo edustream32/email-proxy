@@ -1,24 +1,16 @@
 require('dotenv').config();
 const express = require('express');
-const nodemailer = require('nodemailer');
 const cors = require('cors');
 const helmet = require('helmet');
 
 const app = express();
-
 app.use(helmet());
 app.use(cors());
 app.use(express.json({ limit: '5mb' }));
 
-// Authentication + Debug
+// Authentication
 const authenticate = (req, res, next) => {
   const apiKey = req.headers['x-api-key'];
-
-  console.log("==============================");
-  console.log("Received API Key :", apiKey);
-  console.log("Expected API Key :", process.env.API_KEY);
-  console.log("==============================");
-
   if (!apiKey || apiKey !== process.env.API_KEY) {
     return res.status(401).json({
       success: false,
@@ -28,30 +20,15 @@ const authenticate = (req, res, next) => {
   next();
 };
 
-// SMTP Transporter
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: Number(process.env.SMTP_PORT) || 465,
-  secure: true,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS
-  },
-  tls: {
-    rejectUnauthorized: false
-  },
-  // Force IPv4
-  family: 4
-});
 // Health check
 app.get('/', (req, res) => {
-  res.json({ status: 'Email Proxy is running' });
+  res.json({ status: 'Email Proxy is running (Resend)' });
 });
 
-// Send Email endpoint
+// Send Email using Resend
 app.post('/api/v1/send-email', authenticate, async (req, res) => {
   try {
-    const { to, subject, text, html, cc, bcc } = req.body;
+    const { to, subject, text, html } = req.body;
 
     if (!to || !subject || (!text && !html)) {
       return res.status(400).json({
@@ -60,26 +37,39 @@ app.post('/api/v1/send-email', authenticate, async (req, res) => {
       });
     }
 
-    const mailOptions = {
-      from: `"${process.env.FROM_NAME}" <${process.env.FROM_EMAIL}>`,
-      to,
-      subject,
-      text,
-      html,
-      cc,
-      bcc
-    };
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        from: process.env.FROM_EMAIL,   // Must be a verified domain or onboarding@resend.dev
+        to: [to],
+        subject: subject,
+        text: text,
+        html: html
+      })
+    });
 
-    const info = await transporter.sendMail(mailOptions);
+    const data = await response.json();
+
+    if (!response.ok) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to send email',
+        error: data
+      });
+    }
 
     res.json({
       success: true,
       message: 'Email sent successfully',
-      messageId: info.messageId
+      id: data.id
     });
 
   } catch (error) {
-    console.error('Error sending email:', error);
+    console.error('Error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to send email',
@@ -88,7 +78,6 @@ app.post('/api/v1/send-email', authenticate, async (req, res) => {
   }
 });
 
-// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Email Proxy running on port ${PORT}`);
